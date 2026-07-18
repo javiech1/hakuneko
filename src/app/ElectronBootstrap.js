@@ -1,7 +1,32 @@
 const path = require('path');
 const fs = require('fs-extra');
 const electron = require('electron');
+const remoteMain = require('@electron/remote/main');
 const { ConsoleLogger } = require('@logtrine/logtrine');
+
+remoteMain.initialize();
+
+// Content types for the files served through the "hakuneko://cache/..." protocol.
+// Anything not listed here (e.g. the extensionless connector icon PNGs) is served
+// without a content-type header, letting Chromium sniff it from the file content.
+const cacheMimeTypes = {
+    '.html': 'text/html',
+    '.mjs': 'text/javascript',
+    '.js': 'text/javascript',
+    '.json': 'application/json',
+    '.css': 'text/css',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.txt': 'text/plain',
+    '.md': 'text/markdown'
+};
 const urlFilterAll = { urls: ['http://*/*', 'https://*/*'] };
 const trayTooltipMinimize = 'HakuNeko\nClick to hide window';
 const trayTooltipRestore = 'HakuNeko\nClick to show window';
@@ -81,12 +106,12 @@ module.exports = class ElectronBootstrap {
      *
      */
     _registerCacheProtocol() {
-        electron.protocol.registerBufferProtocol(this._configuration.applicationProtocol, async (request, callback) => {
+        electron.protocol.handle(this._configuration.applicationProtocol, async request => {
             try {
                 let uri = new URL(request.url);
                 let endpoint = path.join(this._directoryMap[uri.hostname], path.normalize(uri.pathname));
                 if(!await fs.exists(endpoint)) {
-                    throw -6; // https://cs.chromium.org/chromium/src/net/base/net_error_list.h
+                    return new Response(null, { status: 404 });
                 }
                 let stats = await fs.stat(endpoint);
                 let mime;
@@ -96,25 +121,23 @@ module.exports = class ElectronBootstrap {
                     buffer = Buffer.from(JSON.stringify(await fs.readdir(endpoint)));
                 }
                 if(stats.isFile()) {
-                    mime = endpoint.endsWith('.mjs') ? 'text/javascript' : undefined;
+                    mime = cacheMimeTypes[path.extname(endpoint).toLowerCase()];
                     buffer = await fs.readFile(endpoint);
                 }
-                callback({
-                    mimeType: mime, // leaving this blank seems to use autodetect
-                    data: buffer
-                });
+                return new Response(buffer, mime ? { headers: { 'content-type': mime } } : undefined);
             } catch(error) {
-                callback(error);
+                return new Response(null, { status: 500 });
             }
         });
     }
 
     _registerConnectorProtocol() {
-        electron.protocol.registerBufferProtocol(this._configuration.connectorProtocol, async (request, callback) => {
+        electron.protocol.handle(this._configuration.connectorProtocol, async request => {
             try {
-                callback(await this._ipcSend('on-connector-protocol-handler', request));
+                let result = await this._ipcSend('on-connector-protocol-handler', { url: request.url });
+                return new Response(result.data, result.mimeType ? { headers: { 'content-type': result.mimeType } } : undefined);
             } catch(error) {
-                callback(undefined);
+                return new Response(null, { status: 500 });
             }
         });
     }
@@ -258,11 +281,14 @@ module.exports = class ElectronBootstrap {
             webPreferences: {
                 experimentalFeatures: true,
                 nodeIntegration: true,
+                contextIsolation: false,
+                sandbox: false,
                 webSecurity: false // required to open local images in browser
             },
             frame: false
         });
 
+        remoteMain.enable(this._window.webContents);
         this._setupBeforeSendHeaders();
         this._setupHeadersReceived();
         this._setupTray(this._showTray);

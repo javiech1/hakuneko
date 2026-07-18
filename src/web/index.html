@@ -15,7 +15,7 @@
     <script src="./js/sql.min.js" defer></script>
     <script src="./js/exif-js.min.js" defer></script>
     <script type="module">
-        const electronDialog = require('electron').remote.dialog
+        const electronDialog = require('@electron/remote').dialog
         import HakuNeko from './mjs/HakuNeko.mjs'
 
         // https://github.com/electron/electron/blob/master/docs/api/dialog.md#dialogshowmessageboxbrowserwindow-options
@@ -91,7 +91,7 @@
         main();
     </script>
     <script>
-        this.win=require('electron').remote.getCurrentWindow();
+        this.win=require('@electron/remote').getCurrentWindow();
 
         function minimizeWindow(){
             this.win.minimize();

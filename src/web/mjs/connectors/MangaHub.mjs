@@ -1,7 +1,7 @@
 import Connector from '../engine/Connector.mjs';
 import Manga from '../engine/Manga.mjs';
 import HeaderGenerator from '../engine/HeaderGenerator.mjs';
-const { remote } = require('electron');
+const remote = require('@electron/remote');
 
 export default class MangaHub extends Connector {
 

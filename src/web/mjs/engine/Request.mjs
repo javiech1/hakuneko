@@ -5,8 +5,7 @@ export default class Request {
 
     // TODO: use dependency injection instead of globals for Engine.Settings, Engine.Blacklist, Enums
     constructor(ipc, settings) {
-        let electron = require('electron');
-        this.electronRemote = electron.remote;
+        this.electronRemote = require('@electron/remote');
         this.browser = this.electronRemote.BrowserWindow;
         this.userAgent = HeaderGenerator.randomUA();
 

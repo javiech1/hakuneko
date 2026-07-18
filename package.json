@@ -10,13 +10,14 @@
     "url": "https://git.io/hakuneko"
   },
   "devDependencies": {
+    "@electron/remote": "latest",
     "@hakuneko/ffmpeg-binaries": "latest",
     "@hakuneko/imagemagick-binaries": "latest",
     "@hakuneko/kindlegen-binaries": "latest",
     "@logtrine/logtrine": "latest",
     "asar": "latest",
     "discord-rpc": "latest",
-    "electron": "8.3.4",
+    "electron": "43.1.1",
     "eslint": "^8.57.0",
     "fs-extra": "latest",
     "innosetup-compiler": "latest",
