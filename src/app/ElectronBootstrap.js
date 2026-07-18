@@ -400,7 +400,9 @@ module.exports = class ElectronBootstrap {
         // inject headers before a request is made (call the handler in the webapp to do the dirty work)
         electron.session.defaultSession.webRequest.onBeforeSendHeaders(urlFilterAll, async (details, callback) => {
             try {
-                let result = await this._ipcSend('on-before-send-headers', details);
+                // only forward plain, structured-clonable fields over IPC (the full "details" object
+                // is not guaranteed to be clonable and fails with "Failed to serialize arguments")
+                let result = await this._ipcSend('on-before-send-headers', { url: details.url, requestHeaders: details.requestHeaders });
                 callback({
                     cancel: false,
                     requestHeaders: result.requestHeaders
@@ -418,7 +420,8 @@ module.exports = class ElectronBootstrap {
     _setupHeadersReceived() {
         electron.session.defaultSession.webRequest.onHeadersReceived(urlFilterAll, async (details, callback) => {
             try {
-                let result = await this._ipcSend('on-headers-received', details);
+                // see _setupBeforeSendHeaders() for why only these fields are forwarded
+                let result = await this._ipcSend('on-headers-received', { url: details.url, responseHeaders: details.responseHeaders });
                 callback({
                     cancel: false,
                     responseHeaders: result.responseHeaders
