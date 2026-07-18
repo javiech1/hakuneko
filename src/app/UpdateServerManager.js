@@ -6,6 +6,16 @@ const UpdatePackageInfo = require('./UpdatePackageInfo');
 
 module.exports = class UpdateServerManager {
 
+    // Timeout for the initial version check / redirect requests (small payload, should be quick).
+    static get REQUEST_TIMEOUT() {
+        return 15000;
+    }
+
+    // Timeout for downloading the update archive itself (larger payload, may legitimately take longer).
+    static get ARCHIVE_REQUEST_TIMEOUT() {
+        return 60000;
+    }
+
     constructor(applicationUpdateURL, logger) {
         try {
             this._logger = logger || new ConsoleLogger(ConsoleLogger.LEVEL.Warn);
@@ -39,29 +49,59 @@ module.exports = class UpdateServerManager {
     /**
      * Download content via HTTP(S).
      * @param {string | URL | RequestOptions} options
+     * @param {number} timeout Milliseconds to wait for the request to complete before aborting it.
+     * @param {number} redirectsLeft Maximum number of "location" redirects left to follow.
      */
-    _request(options) {
+    _request(options, timeout = UpdateServerManager.REQUEST_TIMEOUT, redirectsLeft = 5) {
         return new Promise((resolve, reject) => {
             if(!options) {
                 throw new Error('Invalid request for connection to the update server!');
             }
+            let settled = false;
+            let resolveOnce = data => {
+                if(!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve(data);
+                }
+            };
+            let rejectOnce = error => {
+                if(!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    reject(error);
+                }
+            };
             let request = this._getClient(options).request(options, response => {
                 if(response.headers.location && response.headers.location.startsWith('http')) {
-                    this._request(response.headers.location)
-                        .then(data => resolve(data))
-                        .catch(error => reject(error));
+                    if(redirectsLeft <= 0) {
+                        rejectOnce(new Error('Too many redirects while connecting to the update server!'));
+                        return;
+                    }
+                    this._request(response.headers.location, timeout, redirectsLeft - 1)
+                        .then(data => resolveOnce(data))
+                        .catch(error => rejectOnce(error));
                     return;
                 }
                 if(response.statusCode !== 200) {
-                    reject(new Error('Status: ' + response.statusCode));
+                    rejectOnce(new Error('Status: ' + response.statusCode));
                     return;
                 }
                 let data = [];
                 //response.setEncoding('utf8');
                 response.on('data', chunk => data.push(chunk));
-                response.on('end', () => resolve(Buffer.concat(data)));
+                response.on('end', () => resolveOnce(Buffer.concat(data)));
             } );
-            request.on('error', error => reject(error));
+            request.on('error', error => rejectOnce(error));
+            /*
+             * NOTE: request.setTimeout() only arms once the socket is connected, so it never fires
+             * while stuck resolving DNS or waiting on a TCP handshake that never completes. A plain
+             * timer guards the whole request lifecycle regardless of connection state.
+             */
+            let timer = setTimeout(() => {
+                request.destroy();
+                rejectOnce(new Error('Update server request timed out after ' + timeout + 'ms'));
+            }, timeout);
             //request.write(/* REQUEST BODY */);
             request.end();
         });
@@ -85,6 +125,6 @@ module.exports = class UpdateServerManager {
      * @returns {Promise<Uint8Array>} A promise that resolves with the received bytes
      */
     getUpdateArchive(info) {
-        return this._request(info.link);
+        return this._request(info.link, UpdateServerManager.ARCHIVE_REQUEST_TIMEOUT);
     }
 };

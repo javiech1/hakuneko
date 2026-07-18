@@ -37,7 +37,7 @@ export default class Settings extends EventTarget {
     // TODO: use dependency injection instead of globals for Engine.Storage, Engine.Conenctors
     constructor() {
         super();
-        let app = require('electron').remote.app;
+        let app = require('@electron/remote').app;
         let path = require('path');
         let docs = undefined;
         try {
@@ -146,6 +146,36 @@ export default class Settings extends EventTarget {
                 { value: mimes.png, name: 'PNG (*.png)' },
             ],
             value: mimes.jpeg
+        };
+
+        this.epubOptimizeForKindle = {
+            label: 'Optimize EPUB for Kindle Paperwhite',
+            description: [
+                'Optimize each page for the Kindle Paperwhite Signature Edition (7", 300ppi, 1264x1680):',
+                '- Scale pages to the screen resolution',
+                '- Convert to grayscale with gamma correction and 16 gray levels (e-ink palette)',
+                '- Split double page spreads (reading direction aware) and webtoon strips',
+                '- Generate a fixed-layout comic EPUB (Send to Kindle compatible)',
+                '- Reduce quality if necessary to stay below the 50 MB Send to Kindle limit',
+                'Only applies when "Chapter File Format" is set to Ebook Reader (*.epub).'
+            ].join('\n'),
+            input: types.checkbox,
+            value: false
+        };
+
+        this.epubReadingDirection = {
+            label: 'EPUB Reading Direction',
+            description: [
+                'Page turn direction stored in the EPUB (page-progression-direction).',
+                'Use Right-to-Left for traditional Japanese manga, Left-to-Right for manhwa/manhua/western comics.',
+                'Only applies when "Chapter File Format" is set to Ebook Reader (*.epub).'
+            ].join('\n'),
+            input: types.select,
+            options: [
+                { value: 'ltr', name: 'Left-to-Right (Manhwa / Manhua / Western)' },
+                { value: 'rtl', name: 'Right-to-Left (Traditional Manga)' },
+            ],
+            value: 'ltr'
         };
 
         this.recompressionQuality = {

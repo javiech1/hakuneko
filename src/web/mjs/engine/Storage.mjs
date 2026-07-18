@@ -21,19 +21,25 @@ export default class Storage {
 
     // TODO: use dependency injection instead of globals for EbookGenerator
     constructor() {
-        let electron = require('electron');
-        this.dialog = electron.remote.dialog;
-        this.platform = electron.remote.process.platform;
-        this.shell = electron.remote.shell;
-        this.exec = electron.remote.require('child_process').exec;
+        let electron = require('@electron/remote');
+        this.dialog = electron.dialog;
+        this.platform = electron.process.platform;
+        this.shell = electron.shell;
+        this.exec = electron.require('child_process').exec;
         // TODO: Use fs-extra which provides more convenience functions (e.g. delete recursive)
         this.fs = require('fs');
         this.path = require('path');
-        this.config = this.path.join(electron.remote.app.getPath('userData'), 'hakuneko.');
+        this.config = this.path.join(electron.app.getPath('userData'), 'hakuneko.');
         this.temp = this.path.join(require('os').tmpdir(), 'hakuneko');
         this._createDirectoryChain(this.temp);
 
         this.pdfTargetHeight = 1600;
+        this.kindlePaperwhiteResolution = { width: 1264, height: 1680 };
+        // gamma > 1 darkens midtones to compensate for the washed-out appearance of e-ink displays
+        this.kindleGamma = 1.5;
+        // stay below the 50 MB Send to Kindle limit (with some headroom for the EPUB overhead)
+        this.kindleMaxEbookBytes = 45 * 1024 * 1024;
+        this.kindleJpegQualities = [0.85, 0.7, 0.55];
         this.fileURISubstitutions = {
             rgx: /['#?;]/g,
             map: {
@@ -458,7 +464,7 @@ export default class Storage {
             }
             if (Engine.Settings.chapterFormat.value === extensions.epub) {
                 this._createDirectoryChain(this.path.dirname(output));
-                promise = this._saveChapterPagesEPUB(output, pageData)
+                promise = this._saveChapterPagesEPUB(output, pageData, chapter)
                     .then(() => this._runPostChapterDownloadCommand(chapter, output));
             }
             return promise || Promise.reject(new Error('Unsupported output format: ' + Engine.Settings.chapterFormat.value));
@@ -471,7 +477,11 @@ export default class Storage {
      * Create and save pages to the given e-book file.
      * Callback will be executed after completion and provided with an array of errors (or an empty array when no errors occured).
      */
-    _saveChapterPagesEPUB(ebook, pageData) {
+    async _saveChapterPagesEPUB(ebook, pageData, chapter) {
+        let kindleMode = Engine.Settings.epubOptimizeForKindle.value;
+        if (kindleMode) {
+            pageData = await this._processChapterForKindle(pageData);
+        }
         let zip = new JSZip();
         zip.file('mimetype', EbookGenerator.createMimetype());
         zip.folder('META-INF').file('container.xml', EbookGenerator.createContainerXML());
@@ -482,7 +492,8 @@ export default class Storage {
         let params = [];
         pageData.forEach((page, index) => {
             img.file(page.name, page.data);
-            xhtml.file(index + '.xhtml', EbookGenerator.createPageXHTML(page.name));
+            let size = page.width && page.height ? { width: page.width, height: page.height } : undefined;
+            xhtml.file(index + '.xhtml', EbookGenerator.createPageXHTML(page.name, size));
             params.push({
                 img: page.name,
                 xhtml: index + '.xhtml',
@@ -491,12 +502,139 @@ export default class Storage {
         });
         let uid = btoa(encodeURIComponent(ebook)).replace(/[^a-zA-Z]/g, '');
         let title = `${this.path.basename(this.path.dirname(ebook))} ${this.path.sep} ${this.path.basename(ebook, extensions.epub)}`;
-        oebps.file('content.opf', EbookGenerator.createContentOPF(uid, title, params));
+        let language = chapter && chapter.language || 'und';
+        let direction = Engine.Settings.epubReadingDirection.value;
+        let kindleComic = kindleMode ? this.kindlePaperwhiteResolution : undefined;
+        oebps.file('content.opf', EbookGenerator.createContentOPF(uid, title, params, { language, direction, kindleComic }));
         oebps.file('toc.ncx', EbookGenerator.createTocNCX(uid, '', params));
         return zip.generateAsync({ compression: 'STORE', type: 'uint8array' })
             .then(data => {
                 return this._writeFile(ebook, data);
             });
+    }
+
+    /**
+     * Process all pages of a chapter for the Kindle Paperwhite (KCC-like pipeline).
+     * Re-encodes the whole chapter at decreasing JPEG quality until it fits below
+     * the Send to Kindle file size limit.
+     */
+    async _processChapterForKindle(pageData) {
+        let result = [];
+        for (let quality of this.kindleJpegQualities) {
+            let pages = [];
+            for (let page of pageData) {
+                pages.push(...await this._optimizePageForKindle(page, quality));
+            }
+            let leadingZeroes = String(pages.length).length;
+            result = pages.map((page, index) => {
+                page.name = String(index + 1).padStart(leadingZeroes, 0) + '.jpg';
+                return page;
+            });
+            let totalBytes = result.reduce((accumulator, page) => accumulator + page.data.size, 0);
+            if (totalBytes <= this.kindleMaxEbookBytes) {
+                break;
+            }
+            console.warn(`The chapter size (${totalBytes} bytes) exceeds the Send to Kindle limit, re-encoding with lower quality ...`);
+        }
+        return result;
+    }
+
+    /**
+     * Optimize a single page for the Kindle Paperwhite screen (may yield multiple pages):
+     * - Split double page spreads (reading direction aware) and webtoon strips
+     * - Scale each page to the screen resolution
+     * - Convert to grayscale with gamma correction and 16 level quantization (e-ink palette)
+     */
+    async _optimizePageForKindle(page, quality) {
+        let bitmap = await new Promise((resolve, reject) => {
+            let img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Failed to load image!'));
+            img.src = URL.createObjectURL(page.data);
+        });
+        let regions = this._splitPageForKindle(bitmap);
+        let pages = [];
+        for (let region of regions) {
+            pages.push(await this._renderKindlePage(bitmap, region, quality));
+        }
+        return pages;
+    }
+
+    /**
+     * Determine the regions of the bitmap that shall become individual pages.
+     * Wide images (double page spreads) are split in half, very tall images
+     * (webtoon strips) are split into screen sized segments.
+     */
+    _splitPageForKindle(bitmap) {
+        let { width: targetWidth, height: targetHeight } = this.kindlePaperwhiteResolution;
+        let targetAspect = targetHeight / targetWidth;
+        // double page spread => split in half, page order depends on reading direction
+        if (bitmap.width > bitmap.height) {
+            let half = Math.ceil(bitmap.width / 2);
+            let left = { x: 0, y: 0, width: half, height: bitmap.height };
+            let right = { x: bitmap.width - half, y: 0, width: half, height: bitmap.height };
+            return Engine.Settings.epubReadingDirection.value === 'rtl' ? [right, left] : [left, right];
+        }
+        // webtoon strip => split into segments matching the screen aspect ratio
+        if (bitmap.height / bitmap.width > 2 * targetAspect) {
+            let segmentHeight = Math.round(bitmap.width * targetAspect);
+            let regions = [];
+            for (let y = 0; y < bitmap.height; y += segmentHeight) {
+                regions.push({ x: 0, y: y, width: bitmap.width, height: Math.min(segmentHeight, bitmap.height - y) });
+            }
+            return regions;
+        }
+        return [{ x: 0, y: 0, width: bitmap.width, height: bitmap.height }];
+    }
+
+    /**
+     * Scale the given region of the bitmap to the Kindle screen resolution and
+     * apply the e-ink color transformation (grayscale + gamma + 16 level quantization).
+     */
+    async _renderKindlePage(bitmap, region, quality) {
+        let { width: targetWidth, height: targetHeight } = this.kindlePaperwhiteResolution;
+        // scale to fit the screen, also upscale smaller images for the 300ppi display
+        let scale = Math.min(targetWidth / region.width, targetHeight / region.height);
+        let width = Math.max(1, Math.round(region.width * scale));
+        let height = Math.max(1, Math.round(region.height * scale));
+        let canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        let ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(bitmap, region.x, region.y, region.width, region.height, 0, 0, width, height);
+        this._applyKindleColorTransformation(ctx, width, height);
+        let blob = await new Promise(resolve => {
+            canvas.toBlob(data => resolve(data), 'image/jpeg', quality);
+        });
+        return {
+            name: undefined, // assigned after all pages of the chapter are known
+            type: 'image/jpeg',
+            data: blob,
+            width: width,
+            height: height
+        };
+    }
+
+    /**
+     * Convert the canvas content to grayscale, apply gamma correction for e-ink
+     * displays and quantize to the 16 gray levels of the Kindle screen.
+     */
+    _applyKindleColorTransformation(ctx, width, height) {
+        let lut = new Uint8ClampedArray(256);
+        for (let i = 0; i < 256; i++) {
+            let corrected = 255 * Math.pow(i / 255, this.kindleGamma);
+            lut[i] = Math.round(corrected / 17) * 17;
+        }
+        let imageData = ctx.getImageData(0, 0, width, height);
+        let pixels = imageData.data;
+        for (let i = 0; i < pixels.length; i += 4) {
+            let luminance = Math.round(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]);
+            let gray = lut[luminance];
+            pixels[i] = pixels[i + 1] = pixels[i + 2] = gray;
+        }
+        ctx.putImageData(imageData, 0, 0);
     }
 
     /**
