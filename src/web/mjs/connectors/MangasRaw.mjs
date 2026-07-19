@@ -11,6 +11,10 @@ export default class MangasRaw extends WordPressMangastream {
         this.path = '/manga/list-mode/';
     }
 
+    async _initializeConnector() {
+        throw new Error('MangasRaw is unavailable because its source website no longer hosts a manga catalog.');
+    }
+
     async _getMangas() {
         let mangaList = [];
         for (let path = '/manga', mangas = []; path !== null;) {

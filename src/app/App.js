@@ -23,9 +23,11 @@ module.exports = class App {
         this._logger = logger || new ConsoleLogger(ConsoleLogger.LEVEL.Warn);
         this._extractor = new CommandlineArgumentExtractor(process.argv);
         this._configuration = this._getConfiguration(this._extractor.options);
-        let serverManager = new UpdateServerManager(this._configuration.applicationUpdateURL, this._logger);
-        let cacheManager = new CacheDirectoryManager(this._configuration.applicationCacheDirectory, this._logger);
-        this._updater = new Updater(serverManager, cacheManager, this._logger);
+        if(this._configuration.applicationUpdateURL !== 'DISABLED') {
+            let serverManager = new UpdateServerManager(this._configuration.applicationUpdateURL, this._logger);
+            let cacheManager = new CacheDirectoryManager(this._configuration.applicationCacheDirectory, this._logger);
+            this._updater = new Updater(serverManager, cacheManager, this._logger);
+        }
         this._electron = new ElectronBootstrap(this._configuration, this._logger);
     }
 
@@ -70,8 +72,10 @@ module.exports = class App {
                 delete process.env.HAKUNEKO_PORTABLE;
             }
             await this._electron.launch();
-            await this._electron.loadHTML(loadingPage);
-            await this._updater.updateCache(this._configuration.publicKey);
+            if(this._updater) {
+                await this._electron.loadHTML(loadingPage);
+                await this._updater.updateCache(this._configuration.publicKey);
+            }
             this._electron.loadURL(this._configuration.applicationStartupURL);
         } catch(error) {
             this._logger.error('Failed to start application!', error);

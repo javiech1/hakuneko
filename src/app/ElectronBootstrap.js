@@ -3,6 +3,7 @@ const fs = require('fs-extra');
 const electron = require('electron');
 const remoteMain = require('@electron/remote/main');
 const { ConsoleLogger } = require('@logtrine/logtrine');
+const InteractiveBrowserManager = require('./InteractiveBrowserManager');
 
 remoteMain.initialize();
 
@@ -43,14 +44,16 @@ module.exports = class ElectronBootstrap {
                 privileges: {
                     secure: true,
                     standard: true,
-                    supportFetchAPI: true
+                    supportFetchAPI: true,
+                    corsEnabled: true
                 }
             },
             {
                 scheme: this._configuration.connectorProtocol,
                 privileges: {
                     standard: true,
-                    supportFetchAPI: true
+                    supportFetchAPI: true,
+                    corsEnabled: true
                 }
             }
         ];
@@ -62,6 +65,8 @@ module.exports = class ElectronBootstrap {
         this._minimizeToTray = false; // only supported when tray is shown
         this._showTray = false;
         this._tray;
+        this._interactiveBrowser = null;
+        this._openInteractiveBrowserHandler = this._openInteractiveBrowserHandler.bind(this);
     }
 
     /**
@@ -85,6 +90,12 @@ module.exports = class ElectronBootstrap {
 
         return new Promise(resolve => {
             electron.app.on('ready', () => {
+                this._interactiveBrowser = new InteractiveBrowserManager(
+                    electron.BrowserWindow,
+                    electron.session.defaultSession,
+                    () => this._window,
+                    this._logger
+                );
                 this._appIcon = electron.nativeImage.createFromPath(path.join(this._configuration.applicationCacheDirectory, 'img', 'tray', process.platform === 'win32' ? 'logo.ico' : 'logo.png'));
                 this._registerCacheProtocol();
                 this._registerConnectorProtocol();
@@ -99,6 +110,7 @@ module.exports = class ElectronBootstrap {
             electron.app.on('activate', this._createWindow.bind(this));
             electron.app.on('window-all-closed', this._allWindowsClosedHandler.bind(this));
             electron.app.on('certificate-error', this._certificateErrorHandler.bind(this));
+            electron.ipcMain.on('open-interactive-browser', this._openInteractiveBrowserHandler);
         });
     }
 
@@ -147,7 +159,23 @@ module.exports = class ElectronBootstrap {
      */
     _certificateErrorHandler(event, webContents, url, error, certificate, callback) {
         event.preventDefault();
-        callback(true);
+        callback(!this._interactiveBrowser.hasWebContentsID(webContents.id));
+    }
+
+    _openInteractiveBrowserHandler(event, payload) {
+        if(!this._window || event.sender !== this._window.webContents) {
+            this._logger.warn('Rejected request to open an interactive browser from an unknown renderer.');
+            return;
+        }
+        try {
+            this._interactiveBrowser.open(
+                payload && payload.url,
+                payload && payload.title,
+                payload && payload.cookieDomain
+            );
+        } catch(error) {
+            this._logger.warn(error);
+        }
     }
 
     /**
@@ -399,6 +427,13 @@ module.exports = class ElectronBootstrap {
     _setupBeforeSendHeaders() {
         // inject headers before a request is made (call the handler in the webapp to do the dirty work)
         electron.session.defaultSession.webRequest.onBeforeSendHeaders(urlFilterAll, async (details, callback) => {
+            if(this._interactiveBrowser.hasWebContentsID(details.webContentsId)) {
+                callback({
+                    cancel: false,
+                    requestHeaders: details.requestHeaders
+                });
+                return;
+            }
             try {
                 // only forward plain, structured-clonable fields over IPC (the full "details" object
                 // is not guaranteed to be clonable and fails with "Failed to serialize arguments")
@@ -419,6 +454,17 @@ module.exports = class ElectronBootstrap {
 
     _setupHeadersReceived() {
         electron.session.defaultSession.webRequest.onHeadersReceived(urlFilterAll, async (details, callback) => {
+            if(this._interactiveBrowser.hasWebContentsID(details.webContentsId)) {
+                let responseHeaders = details.responseHeaders;
+                if(this._interactiveBrowser.isFirstPartyURL(details.webContentsId, details.url)) {
+                    responseHeaders = InteractiveBrowserManager.prepareFirstPartyResponseHeaders(details.url, responseHeaders);
+                }
+                callback({
+                    cancel: false,
+                    responseHeaders
+                });
+                return;
+            }
             try {
                 // see _setupBeforeSendHeaders() for why only these fields are forwarded
                 let result = await this._ipcSend('on-headers-received', { url: details.url, responseHeaders: details.responseHeaders });

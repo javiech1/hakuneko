@@ -1,4 +1,3 @@
-const App = require('../App.js');
 const Configuration = require('../Configuration');
 const ConfigurationLinux = require('../ConfigurationLinux');
 const ConfigurationDarwin = require('../ConfigurationDarwin');
@@ -8,7 +7,9 @@ var logger = new FileLogger(__filename + '.log', FileLogger.LEVEL.All);
 logger.clear();
 
 jest.mock('fs-extra');
+jest.mock('../ElectronBootstrap', () => jest.fn());
 const fs = require('fs-extra');
+const App = require('../App.js');
 
 jest.mock('electron', () => {
     return {

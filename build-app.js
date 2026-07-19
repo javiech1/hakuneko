@@ -841,6 +841,12 @@ class ElectronPackagerDarwin extends ElectronPackager {
             '	<string>10.10.0</string>',
             '	<key>NSHighResolutionCapable</key>',
             '	<true/>',
+            '	<key>NSBluetoothAlwaysUsageDescription</key>',
+            '	<string>HakuNeko uses Bluetooth only when you choose a nearby device to sign in.</string>',
+            '	<key>NSBluetoothPeripheralUsageDescription</key>',
+            '	<string>HakuNeko uses Bluetooth only when you choose a nearby device to sign in.</string>',
+            '	<key>NSPrincipalClass</key>',
+            '	<string>AtomApplication</string>',
             '</dict>',
             '</plist>'
         ];

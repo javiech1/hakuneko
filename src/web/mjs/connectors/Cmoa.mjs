@@ -9,13 +9,23 @@ export default class Cmoa extends SpeedBinb {
         super.label = 'コミックシーモア (Cmoa)';
         this.tags = ['manga', 'japanese'];
         this.url = 'https://www.cmoa.jp';
+        this.links = {
+            login: 'https://www.cmoa.jp/auth/login/'
+        };
+        this.authenticationDomain = 'cmoa.jp';
+        this.requestOptions.credentials = 'include';
     }
 
     async _getMangaFromURI(uri) {
         const request = new Request(uri, this.requestOptions);
         const dom = await this.fetchDOM(request);
-        const id = dom.querySelector('#GA_this_page_title_id').textContent.trim();
-        const title = dom.querySelector('#GA_this_page_title_name').textContent.trim();
+        const idElement = dom.querySelector('#GA_this_page_title_id, #title_id');
+        const titleElement = dom.querySelector('#GA_this_page_title_name, h1.titleName');
+        if (!idElement || !titleElement) {
+            throw new Error('Unable to identify the manga on this Cmoa page!');
+        }
+        const id = idElement.textContent.trim();
+        const title = titleElement.textContent.trim();
         return new Manga(this, `/title/${id}/`, title);
     }
 
@@ -47,6 +57,7 @@ export default class Cmoa extends SpeedBinb {
                 chapters.push({
                     id: `/bib/speedreader/?cid=${id.slice(1, 11)}_jp_${id.slice(11, 15)}&u0=${u0}&u1=0`,
                     title: title.replace('NEW\n', '').trim(),
+                    language: 'ja',
                 });
             }
         }
